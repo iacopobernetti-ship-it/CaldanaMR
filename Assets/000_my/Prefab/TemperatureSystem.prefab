@@ -1,0 +1,119 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &90490809381820273
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 5316449080618721609}
+  - component: {fileID: 7933019288951861807}
+  - component: {fileID: 6768515349385206596}
+  m_Layer: 0
+  m_Name: TemperatureSystem
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &5316449080618721609
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 90490809381820273}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 41.27477, y: 24.1031, z: -26.93465}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &7933019288951861807
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 90490809381820273}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7d94c8dbbb57ddd4c8adecd367537207, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TemperatureApiClient
+  baseUrl: http://80.211.133.205:8006
+  userId: berne
+  modelId: CaldanaLTS
+  meteoStationTemperatureMax: 25
+  year: 2026
+  dayOfYear: 97
+  timesOfDay: 0900000009000000090000000900000009000000090000000900000009000000090000000900000009000000090000000900000009000000
+  timezoneStr: Europe/Rome
+  enableShadowRaycast: 1
+  shadowBias: 0.01
+  linkeTurbidity: 3.5
+  albedo: 0.22
+  useGroundReflected: 1
+  surfaceTempOffsetC: 8
+  faceDebugData:
+    status: 
+    user_id: 
+    model_id: 
+    face_count: 0
+    face_debug: []
+  responseData:
+    status: 
+    user_id: 
+    model_id: 
+    metadata:
+      user_id: 
+      model_id: 
+      year: 0
+      day_of_year: 0
+      times_of_day: 
+      timezone_str: 
+      faces_count: 0
+      vertices_count: 0
+      model_signature: 
+      file_sha256: 
+      invalid_face_normals_count: 0
+      temperature_min_c: 0
+      temperature_mean_c: 0
+      temperature_max_c: 0
+      mean_radiation_reference_w_m2: 0
+      mean_radiation_reference_method: 
+      clear_sky_model: 
+      albedo: 0
+      use_ground_reflected: 0
+      surface_temp_offset_c: 0
+      unity_triangle_mapping: 0
+      temperature_json_format: 
+      shadow_raycast_enabled: 0
+      coordinates:
+        latitude: 0
+        longitude: 0
+      created_at: 
+      triangle_temperature_preview: []
+      radiation_simulations: []
+    face_temperatures:
+      temperature_unit: 
+      face_count: 0
+      temperatures: []
+--- !u!114 &6768515349385206596
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 90490809381820273}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1095df2452ebbe2408e666be50cb8ba0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TemperatureBootstrap
+  apiClient: {fileID: 7933019288951861807}
+  colorizer: {fileID: 0}

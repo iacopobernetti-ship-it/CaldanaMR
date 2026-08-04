@@ -1,0 +1,61 @@
+# Simple building OBJ
+# Units: meters
+# Origin: south-west ground corner at (0,0,0)
+# Dimensions:
+#   footprint: 10.0 m (X) x 8.0 m (Y)
+#   wall height (eaves): 6.0 m
+#   roof ridge height: 8.0 m
+#   ridge runs along X at Y = 4.0 m
+# Geometry is triangulated.
+
+o SimpleBuilding
+
+# Vertices
+v 0.0 0.0 0.0
+v 10.0 0.0 0.0
+v 10.0 8.0 0.0
+v 0.0 8.0 0.0
+
+v 0.0 0.0 6.0
+v 10.0 0.0 6.0
+v 10.0 8.0 6.0
+v 0.0 8.0 6.0
+
+v 0.0 4.0 8.0
+v 10.0 4.0 8.0
+
+# Faces (counter-clockwise viewed from outside)
+
+# Floor
+f 1 3 2
+f 1 4 3
+
+# South wall (Y=0)
+f 1 2 6
+f 1 6 5
+
+# East wall (X=10)
+f 2 3 7
+f 2 7 6
+
+# North wall (Y=8)
+f 3 4 8
+f 3 8 7
+
+# West wall (X=0)
+f 4 1 5
+f 4 5 8
+
+# South roof slope
+f 5 6 10
+f 5 10 9
+
+# North roof slope
+f 8 10 7
+f 8 9 10
+
+# West gable
+f 5 9 8
+
+# East gable
+f 6 7 10
