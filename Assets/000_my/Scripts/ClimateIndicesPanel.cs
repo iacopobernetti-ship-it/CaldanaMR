@@ -1,6 +1,26 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+
+/// <summary>
+/// Regola di rischio per un indice: match sul nome (sottostringa, case-insensitive) e due soglie.
+/// higherIsWorse = true: valore alto = rischio. false: valore basso = rischio (es. giorni di comfort).
+/// </summary>
+[Serializable]
+public class IndexRiskRule
+{
+    [Tooltip("Match sul nome indice (sottostringa, case-insensitive). Es. 'tropical nights'.")]
+    public string keyContains = "";
+    [Tooltip("true: valori alti = peggio; false: valori bassi = peggio.")]
+    public bool higherIsWorse = true;
+    [Tooltip("Soglia ARANCIONE (allarme).")]
+    public float warn = 0f;
+    [Tooltip("Soglia ROSSA (rischio).")]
+    public float risk = 0f;
+}
 
 /// <summary>
 /// Quarto pannello: indici climatici "window" (heritage e tourism) dell'API FutureClimate
@@ -161,7 +181,8 @@ public class ClimateIndicesPanel : MonoBehaviour
         {
             SetText(resultsStatus, "");
             SetText(resultsTitle, res.headerLine);
-            SetText(resultsText, res.body);
+            if (resultsText != null) resultsText.richText = true;   // abilita i tag <color>
+            SetText(resultsText, BuildColoredBody(res));
             // riporta lo scroll in cima
             if (resultsScroll != null) resultsScroll.verticalNormalizedPosition = 1f;
         }
@@ -215,4 +236,126 @@ public class ClimateIndicesPanel : MonoBehaviour
     }
 
     private static void SetText(TMP_Text t, string s) { if (t != null) t.text = s; }
+
+    // ==================================================================
+    //  Colorazione per rischio degli indici
+    // ==================================================================
+    [Header("Colorazione rischio indici")]
+    public Color neutralColor = new Color(0.85f, 0.88f, 0.92f);
+    public Color greenColor = new Color(0.35f, 0.80f, 0.45f);
+    public Color orangeColor = new Color(0.96f, 0.62f, 0.20f);
+    public Color redColor = new Color(0.92f, 0.32f, 0.28f);
+
+    [Tooltip("Regole di soglia per indice. Un indice senza regola resta neutro. " +
+             "Il match e' per PAROLE INTERE (es. 'comfort days' NON matcha 'discomfort days'). " +
+             "Le soglie sono da calibrare sul dominio.")]
+    public IndexRiskRule[] riskRules = new IndexRiskRule[]
+    {
+        // Conteggi di giorni/notti avversi: valore alto = peggio, 0 = verde (nessun problema).
+        new IndexRiskRule { keyContains = "discomfort days",       higherIsWorse = true,  warn = 5,  risk = 15 },
+        new IndexRiskRule { keyContains = "heat stress days",      higherIsWorse = true,  warn = 5,  risk = 15 },
+        new IndexRiskRule { keyContains = "danger days",           higherIsWorse = true,  warn = 1,  risk = 5  },
+        new IndexRiskRule { keyContains = "warning days",          higherIsWorse = true,  warn = 3,  risk = 10 },
+        new IndexRiskRule { keyContains = "tropical nights",       higherIsWorse = true,  warn = 20, risk = 40 },
+        new IndexRiskRule { keyContains = "very warm nights",      higherIsWorse = true,  warn = 15, risk = 30 },
+        new IndexRiskRule { keyContains = "hot days",              higherIsWorse = true,  warn = 10, risk = 25 },
+        new IndexRiskRule { keyContains = "heavy rain days",       higherIsWorse = true,  warn = 5,  risk = 15 },
+        new IndexRiskRule { keyContains = "high dtr days",         higherIsWorse = true,  warn = 10, risk = 20 },
+        new IndexRiskRule { keyContains = "salt cycle proxy days", higherIsWorse = true,  warn = 5,  risk = 15 },
+        new IndexRiskRule { keyContains = "freeze thaw days",      higherIsWorse = true,  warn = 5,  risk = 15 },
+        // Positivi: valore alto = meglio (piu' comfort = meglio).
+        new IndexRiskRule { keyContains = "comfort days",          higherIsWorse = false, warn = 20, risk = 10 },
+    };
+
+    private enum Risk { Neutral, Green, Orange, Red }
+
+    private string BuildColoredBody(FutureClimateClient.WindowResult res)
+    {
+        var sb = new StringBuilder();
+
+        if (!string.IsNullOrEmpty(res.periodText))
+            sb.Append(Wrap(res.periodText, neutralColor)).Append("\n\n");
+
+        if (res.indices != null && res.indices.Count > 0)
+        {
+            sb.Append(Wrap("Indices", neutralColor)).Append('\n');
+            foreach (var e in res.indices)
+            {
+                Color c = ColorFor(e);
+                sb.Append(Wrap("- " + e.name + ": " + e.valueText, c)).Append('\n');
+            }
+        }
+        else
+        {
+            sb.Append(Wrap("No indices returned for this window.", neutralColor)).Append('\n');
+        }
+
+        if (res.notes != null && res.notes.Count > 0)
+        {
+            sb.Append('\n').Append(Wrap("Notes", neutralColor)).Append('\n');
+            foreach (var n in res.notes)
+                sb.Append(Wrap("- " + n, neutralColor)).Append('\n');
+        }
+
+        return sb.ToString();
+    }
+
+    private Color ColorFor(FutureClimateClient.IndexEntry e)
+    {
+        if (e == null || !e.hasValue) return neutralColor;
+        switch (Classify(e.name, e.value))
+        {
+            case Risk.Green:  return greenColor;
+            case Risk.Orange: return orangeColor;
+            case Risk.Red:    return redColor;
+            default:          return neutralColor;
+        }
+    }
+
+    private Risk Classify(string name, float value)
+    {
+        if (riskRules == null || string.IsNullOrEmpty(name)) return Risk.Neutral;
+        string lname = name.ToLowerInvariant();
+        foreach (var r in riskRules)
+        {
+            if (r == null || string.IsNullOrEmpty(r.keyContains)) continue;
+            if (!TokenMatch(lname, r.keyContains.ToLowerInvariant())) continue;
+
+            if (r.higherIsWorse)
+            {
+                if (value >= r.risk) return Risk.Red;
+                if (value >= r.warn) return Risk.Orange;
+                return Risk.Green;
+            }
+            else
+            {
+                if (value <= r.risk) return Risk.Red;
+                if (value <= r.warn) return Risk.Orange;
+                return Risk.Green;
+            }
+        }
+        return Risk.Neutral;   // nessuna regola: neutro
+    }
+
+    // Match per PAROLE INTERE contigue: "comfort days" NON matcha "discomfort days"
+    // (perche' "discomfort" e' un token distinto da "comfort").
+    private static bool TokenMatch(string nameLower, string keyLower)
+    {
+        char[] sep = { ' ', '\t' };
+        string[] nameTok = nameLower.Split(sep, StringSplitOptions.RemoveEmptyEntries);
+        string[] keyTok = keyLower.Split(sep, StringSplitOptions.RemoveEmptyEntries);
+        if (keyTok.Length == 0 || keyTok.Length > nameTok.Length) return false;
+
+        for (int i = 0; i + keyTok.Length <= nameTok.Length; i++)
+        {
+            bool all = true;
+            for (int j = 0; j < keyTok.Length; j++)
+                if (nameTok[i + j] != keyTok[j]) { all = false; break; }
+            if (all) return true;
+        }
+        return false;
+    }
+
+    private static string Wrap(string text, Color c) =>
+        "<color=#" + ColorUtility.ToHtmlStringRGB(c) + ">" + text + "</color>";
 }

@@ -219,13 +219,25 @@ public class FutureClimateClient : MonoBehaviour
     //  Indici "window" heritage / tourism (per il 4o pannello)
     // ==================================================================
 
+    /// <summary>Singolo indice: nome leggibile, valore numerico (se presente) e testo formattato.</summary>
+    public class IndexEntry
+    {
+        public string name;
+        public float value;
+        public bool hasValue;
+        public string valueText;
+    }
+
     /// <summary>Esito di una richiesta di indici su finestra, gia' formattato per la UI (in inglese).</summary>
     public class WindowResult
     {
         public bool ok;
         public string error;        // messaggio in inglese se ok == false
         public string headerLine;   // titolo: "Heritage - ssp585 - urban_cultural"
-        public string body;         // testo multilinea scrollabile
+        public string body;         // testo multilinea (fallback non colorato)
+        public string periodText;   // righe "Window: ... / Reference date: ..."
+        public List<IndexEntry> indices = new List<IndexEntry>();
+        public List<string> notes = new List<string>();
     }
 
     /// <summary>Indici heritage su finestra centrata/indietro/avanti attorno alla data.</summary>
@@ -336,10 +348,12 @@ public class FutureClimateClient : MonoBehaviour
             string start = GetStr(period, "start");
             string end = GetStr(period, "end");
             string refDate = GetStr(period, "reference_date");
-            sb.Append("Window: ").Append(wdays).Append(" days, ").Append(wmode)
-              .Append("  (").Append(start).Append(" \u2192 ").Append(end).Append(")\n");
-            if (!string.IsNullOrEmpty(refDate)) sb.Append("Reference date: ").Append(refDate).Append('\n');
-            sb.Append('\n');
+            var sbP = new StringBuilder();
+            sbP.Append("Window: ").Append(wdays).Append(" days, ").Append(wmode)
+               .Append("  (").Append(start).Append(" \u2192 ").Append(end).Append(')');
+            if (!string.IsNullOrEmpty(refDate)) sbP.Append("\nReference date: ").Append(refDate);
+            result.periodText = sbP.ToString();
+            sb.Append(result.periodText).Append("\n\n");
         }
 
         var indices = obj.TryGetValue("indices", out var iv) ? iv as Dictionary<string, object> : null;
@@ -347,7 +361,12 @@ public class FutureClimateClient : MonoBehaviour
         {
             sb.Append("Indices\n");
             foreach (var kv in indices)
-                sb.Append("- ").Append(Prettify(kv.Key)).Append(": ").Append(FormatVal(kv.Value)).Append('\n');
+            {
+                var e = new IndexEntry { name = Prettify(kv.Key), valueText = FormatVal(kv.Value) };
+                if (kv.Value is double dv) { e.value = (float)dv; e.hasValue = true; }
+                result.indices.Add(e);
+                sb.Append("- ").Append(e.name).Append(": ").Append(e.valueText).Append('\n');
+            }
         }
         else
         {
@@ -359,7 +378,7 @@ public class FutureClimateClient : MonoBehaviour
         {
             sb.Append("\nNotes\n");
             foreach (var n in notes)
-                if (n is string ns) sb.Append("- ").Append(ns).Append('\n');
+                if (n is string ns) { result.notes.Add(ns); sb.Append("- ").Append(ns).Append('\n'); }
         }
 
         result.ok = true;
