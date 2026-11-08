@@ -2521,7 +2521,7 @@ PrefabInstance:
     - target: {fileID: 1386082259481429544, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
       propertyPath: m_EnableFarCasting
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 1576675058413778859, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
@@ -2721,7 +2721,7 @@ PrefabInstance:
     - target: {fileID: 2942156198692655549, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
       propertyPath: m_EnableFarCasting
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 2942706408635925570, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
@@ -2992,7 +2992,7 @@ PrefabInstance:
     - target: {fileID: 5359434741994886739, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
       propertyPath: m_EnableFarCasting
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5427215433783172354, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
@@ -3248,7 +3248,7 @@ PrefabInstance:
     - target: {fileID: 8227192243087186103, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
       propertyPath: m_EnableFarCasting
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 8504099170080106023, guid: d6878e1999eb4b44a9f5a263af86c185,
         type: 3}
