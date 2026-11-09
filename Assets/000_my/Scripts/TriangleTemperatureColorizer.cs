@@ -199,9 +199,16 @@ public class TriangleTemperatureColorizer : MonoBehaviour
 
             if (indexMap == null)
             {
-                Debug.LogError("BuildThenColorAsync: centroid mapping failed.");
+                Debug.LogError("BuildThenColorAsync: centroid mapping failed.\n" +
+                               (_mappingReport ?? "(nessun rapporto disponibile)"));
                 return;
             }
+
+            // Anche in caso di successo il rapporto serve: dice quanti triangoli sono
+            // stati abbinati per prossimita' invece che esattamente, ed e' il segnale
+            // precoce di una geometria che sta cominciando a divergere.
+            if (!string.IsNullOrEmpty(_mappingReport))
+                Debug.Log("BuildThenColorAsync: mappatura riuscita.\n" + _mappingReport);
 
             // --- MAIN THREAD: finalizza (mesh splittata + bake collider, una volta sola) ---
             _triToBackendIndex = indexMap;
@@ -229,6 +236,12 @@ public class TriangleTemperatureColorizer : MonoBehaviour
             }
         }
     }
+
+    // Diagnostica dell'ultimo tentativo di mappatura.
+    // Riempita nel thread di background e stampata sul main thread: un fallimento muto
+    // costringe a indovinare, mentre sapere QUANTI triangoli sono stati abbinati separa
+    // un problema di tolleranza su pochi casi da due geometrie che non si corrispondono.
+    private string _mappingReport;
 
     // Mapping geometrico triangolo->indice backend. Opera SOLO su array: thread-safe (no oggetti Unity).
     private int[] ComputeIndexMap(Vector3[] unityCentroids, int[] tris, Vector3[] verts, Vector3[] norms, FaceDebugData[] debugFaces, int triangleCount)
@@ -280,6 +293,11 @@ public class TriangleTemperatureColorizer : MonoBehaviour
 
         bool[] matchedMask = new bool[triangleCount];
         int matchedExact = 0, matchedFallback = 0, unmatched = 0;
+
+        // Campioni di triangoli rimasti senza partner: bastano pochi per misurare
+        // QUANTO sono lontani, che e' la differenza fra "soglia troppo stretta" e
+        // "due modelli diversi".
+        List<int> unmatchedSamples = new List<int>();
 
         // Pass 1: match esatto per chiave centroide
         for (int tri = 0; tri < triangleCount; tri++)
@@ -358,8 +376,43 @@ public class TriangleTemperatureColorizer : MonoBehaviour
             else
             {
                 unmatched++;
+                if (unmatchedSamples.Count < 5) unmatchedSamples.Add(tri);
             }
         }
+
+        // --- Rapporto di diagnosi ---
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("[Mapping] triangoli Unity=" + triangleCount + "  facce backend=" + debugFaces.Length);
+        sb.AppendLine("[Mapping] abbinati esatti=" + matchedExact +
+                      "  per prossimita'=" + matchedFallback +
+                      "  NON abbinati=" + unmatched);
+        sb.AppendLine("[Mapping] assi scelti: perm(" + best.permX + "," + best.permY + "," + best.permZ +
+                      ") segni(" + best.signX + "," + best.signY + "," + best.signZ +
+                      ")  corrispondenze trovate dal rilevatore=" + best.matches);
+        sb.AppendLine("[Mapping] ingombro Unity   centro=" + unityCenter.ToString("F2") +
+                      " scala=" + unityScale.ToString("F2"));
+        sb.AppendLine("[Mapping] ingombro backend centro=" + backendCenter.ToString("F2") +
+                      " scala=" + backendScale.ToString("F2"));
+
+        // Per i primi triangoli orfani, quanto dista il candidato piu' vicino.
+        // La soglia del pass 2 e' 0.03 in coordinate normalizzate: un valore appena
+        // sopra indica una tolleranza stretta, un valore molto piu' grande indica che
+        // in quel punto il backend non ha proprio nulla.
+        for (int s = 0; s < unmatchedSamples.Count; s++)
+        {
+            int tri = unmatchedSamples[s];
+            Vector3 un = NormalizePoint(unityCentroids[tri], unityCenter, unityScale);
+            float dMin = float.MaxValue;
+            for (int i = 0; i < backendCandidates.Length; i++)
+            {
+                float d = Vector3.Distance(un, backendCandidates[i].transformedCentroid);
+                if (d < dMin) dMin = d;
+            }
+            sb.AppendLine("[Mapping] triangolo orfano " + tri +
+                          "  distanza dal piu' vicino=" + dMin.ToString("F4") + "  (soglia 0.0300)");
+        }
+
+        _mappingReport = sb.ToString();
 
         if (matchedExact + matchedFallback != triangleCount)
             return null;

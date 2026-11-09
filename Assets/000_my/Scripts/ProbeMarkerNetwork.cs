@@ -96,6 +96,20 @@ public class ProbeMarkerNetwork : NetworkBehaviour
         _markers.Add(m);
     }
 
+    /// <summary>
+    /// Toglie tutti i marker. Serve al cambio di borgo: le coordinate sono locali al
+    /// frame del modello, quindi un marker piazzato su Caldana, riprodotto su Bibbona,
+    /// indicherebbe un punto che nessuno ha mai misurato - e lo farebbe con l'aria di
+    /// un dato, che e' il modo peggiore di sbagliare in uno strumento di analisi.
+    /// </summary>
+    public void RequestClearAll() => ClearAllRpc();
+
+    [Rpc(SendTo.Owner)]
+    private void ClearAllRpc()
+    {
+        _markers.Clear();
+    }
+
     private void HandleClientDisconnect(ulong clientId)
     {
         for (int i = _markers.Count - 1; i >= 0; i--)

@@ -7,7 +7,61 @@ using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
-/// Sincronizza in rete i parametri di simulazione (data/ora) e di colorazione
+/// Descrive un borgo selezionabile sul tavolo.
+///
+/// Ogni borgo ha il suo modello sul servizio 8006 (user_id + model_id), la sua mesh in
+/// scena con il proprio colorizer, e le proprie coordinate. Tenere un TemperatureApiClient
+/// per borgo, invece di riusarne uno solo cambiandogli il model_id, serve a conservare la
+/// cache: la geometria (face-debug) e l'ultima risposta restano in memoria, quindi tornare
+/// al borgo precedente e' immediato e non ripassa dalla rete.
+/// </summary>
+[Serializable]
+public class VillageSlot
+{
+    [Tooltip("Nome mostrato nei pulsanti e nel pannello informazioni.")]
+    public string displayName = "Caldana";
+
+    [Tooltip("Radice del modello 3D in scena: viene attivata solo quando il borgo e' selezionato.")]
+    public GameObject root;
+
+    [Tooltip("Client dell'API temperature superficiali configurato con il model_id di QUESTO borgo.")]
+    public TemperatureApiClient apiClient;
+
+    [Tooltip("Colorizer sulla mesh di questo borgo.")]
+    public TriangleTemperatureColorizer colorizer;
+
+    [Header("Sito")]
+    [Tooltip("Latitudine del borgo: guida il Sole e la richiesta all'API climatica.")]
+    public double latitude = 42.9340;
+
+    [Tooltip("Longitudine del borgo.")]
+    public double longitude = 10.8580;
+
+    [Tooltip("Rotazione da applicare per allineare il Nord reale al +Z del modello importato. " +
+             "E' una proprieta' della mesh, non del luogo: due rilievi diversi hanno quasi " +
+             "sempre valori diversi.")]
+    public float northOffsetDeg = 0f;
+
+    // ------------------------------------------------------------------
+    //  Cache di runtime (non serializzata: vive solo nella sessione)
+    //
+    //  Firma dei parametri con cui e' stata calcolata la risposta che questo
+    //  slot ha in pancia. Se allo switch la firma coincide, la chiamata
+    //  /simulate si salta e si ri-colora e basta: e' il caso dell'avanti e
+    //  indietro fra due borghi sulla stessa data, cioe' il gesto del confronto.
+    // ------------------------------------------------------------------
+    [NonSerialized] public string cachedSignature;
+
+    // Il readout climatico va memorizzato insieme alla risposta: dipende dalle
+    // coordinate, quindi e' diverso per ogni borgo. Senza questo, saltando la
+    // chiamata il pannello mostrerebbe la temperatura dell'altro borgo.
+    [NonSerialized] public float cachedTminC;
+    [NonSerialized] public float cachedTmaxC;
+    [NonSerialized] public float cachedAirC;
+}
+
+/// <summary>
+/// Sincronizza in rete i parametri di simulazione (borgo, data/ora, scenario) e di colorazione
 /// (range min/max + ramp) e pilota TemperatureApiClient + TriangleTemperatureColorizer.
 ///
 /// Modello scelto:
@@ -17,6 +71,8 @@ using UnityEngine;
 /// - La data/ora richiede un rilancio della simulazione (cambia le temperature).
 /// - Il colore (min/max + ramp) e' locale: ri-colora le temperature gia' scaricate,
 ///   senza richiamare l'API. Molto piu' veloce. Vedi 'forceResimOnColorChange'.
+/// - Il borgo attivo e' anch'esso sincronizzato: cambiarlo rilancia la simulazione con
+///   data, ora e scenario invariati, che e' il confronto che interessa.
 ///
 /// Va messo su un GameObject con NetworkObject, figlio del tavolo (Vector3.zero),
 /// cosi' vive nello spazio condiviso del template.
@@ -24,11 +80,28 @@ using UnityEngine;
 [RequireComponent(typeof(NetworkObject))]
 public class ThermalSimNetworkController : NetworkBehaviour
 {
-    [Header("Riferimenti")]
-    public TemperatureApiClient apiClient;
-    public TriangleTemperatureColorizer colorizer;
+    [Header("Borghi selezionabili")]
+    [Tooltip("Uno slot per borgo. Il primo e' quello attivo all'avvio. " +
+             "Se l'array e' vuoto si usano i riferimenti singoli qui sotto (modalita' a un borgo).")]
+    public VillageSlot[] villages = new VillageSlot[0];
+
+    [Header("Riferimenti condivisi")]
+    [Tooltip("Sole prototipo: allo switch ne aggiorno coordinate e orientamento del Nord.")]
+    public SunPositioner sun;
+
+    [Tooltip("Stato di rete dei marker della sonda. Allo switch i marker vengono azzerati, " +
+             "perche' le loro coordinate sono locali al modello e su un altro borgo " +
+             "indicherebbero un punto che nessuno ha mai misurato.")]
+    public ProbeMarkerNetwork markerNetwork;
+
     [Tooltip("Client dell'API climatica (porta 8004) da cui derivare la temperatura dell'aria.")]
     public FutureClimateClient climateClient;
+
+    [Header("Riferimenti singoli (solo se 'villages' e' vuoto)")]
+    [Tooltip("Usati come ripiego quando non sono configurati gli slot: tengono in vita " +
+             "la scena esistente finche' non si popola l'array dei borghi.")]
+    public TemperatureApiClient apiClient;
+    public TriangleTemperatureColorizer colorizer;
 
     [Header("Scenario climatico")]
     [Tooltip("Scenario iniziale: 0=ssp126, 1=ssp245, 2=ssp585.")]
@@ -37,6 +110,10 @@ public class ThermalSimNetworkController : NetworkBehaviour
     [Header("Comportamento")]
     [Tooltip("Se true, anche un cambio di colore rilancia la simulazione remota (sconsigliato).")]
     public bool forceResimOnColorChange = false;
+
+    // --- Borgo attivo ---
+    private readonly NetworkVariable<int> _villageIndex =
+        new(0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
     // --- Parametri di simulazione (data/ora) ---
     private readonly NetworkVariable<int> _year =
@@ -64,6 +141,14 @@ public class ThermalSimNetworkController : NetworkBehaviour
         new(0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
     // --- Generazioni: bump per innescare azioni su tutti i client ---
+    // ATTENZIONE ALL'ORDINE DI DICHIARAZIONE: i NetworkVariable dello stesso
+    // NetworkBehaviour viaggiano in un unico messaggio e vengono applicati
+    // nell'ordine in cui sono dichiarati. _cacheEpoch sta PRIMA di _simGeneration
+    // perche' quando "Aggiorna" li incrementa entrambi, l'epoca dev'essere gia'
+    // cambiata nel momento in cui la simulazione parte: altrimenti la cache
+    // risponderebbe con il risultato vecchio e il pulsante non aggiornerebbe nulla.
+    private readonly NetworkVariable<int> _cacheEpoch =
+        new(0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
     private readonly NetworkVariable<int> _simGeneration =
         new(0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
     private readonly NetworkVariable<int> _colorGeneration =
@@ -79,9 +164,9 @@ public class ThermalSimNetworkController : NetworkBehaviour
     /// <summary>Errore dall'API climatica (messaggio in inglese) -> mostrato nel pannello.</summary>
     public event Action<string> OnClimateError;
 
-    private bool _faceDebugReady;
     private Coroutine _runningSim;
     private bool _simBusy;
+    private int _appliedVillageIndex = -1;   // -1 = selezione non ancora applicata in scena
 
     // Ultimo esito climatico (per il readout nel pannello).
     private float _lastAirTempC;
@@ -104,9 +189,62 @@ public class ThermalSimNetworkController : NetworkBehaviour
     public float ColorMax => _colorMax.Value;
     public int RampIndex => _rampIndex.Value;
 
+    /// <summary>Indice del borgo attivo, sincronizzato fra i giocatori.</summary>
+    public int VillageIndex => ClampVillage(_villageIndex.Value);
+
+    /// <summary>Quanti borghi sono configurati (0 = modalita' a un borgo con i riferimenti singoli).</summary>
+    public int VillageCount => villages != null ? villages.Length : 0;
+
+    /// <summary>Nome del borgo attivo, per i pannelli.</summary>
+    public string ActiveVillageName
+    {
+        get
+        {
+            VillageSlot s = ActiveSlot;
+            return s != null && !string.IsNullOrEmpty(s.displayName) ? s.displayName : "";
+        }
+    }
+
+    /// <summary>Nome dell'i-esimo borgo, per etichettare i pulsanti.</summary>
+    public string VillageNameAt(int i)
+    {
+        if (villages == null || i < 0 || i >= villages.Length || villages[i] == null) return "";
+        return villages[i].displayName;
+    }
+
+    // ---------- Risoluzione dello slot attivo ----------
+
+    private int ClampVillage(int i)
+    {
+        if (villages == null || villages.Length == 0) return 0;
+        return Mathf.Clamp(i, 0, villages.Length - 1);
+    }
+
+    private VillageSlot ActiveSlot
+    {
+        get
+        {
+            if (villages == null || villages.Length == 0) return null;
+            return villages[ClampVillage(_villageIndex.Value)];
+        }
+    }
+
+    // Tutto il resto del controller passa da qui, invece di usare i campi singoli:
+    // cosi' la logica e' una sola, con o senza slot configurati.
+    private TemperatureApiClient ActiveApi
+    {
+        get { VillageSlot s = ActiveSlot; return s != null && s.apiClient != null ? s.apiClient : apiClient; }
+    }
+
+    private TriangleTemperatureColorizer ActiveColorizer
+    {
+        get { VillageSlot s = ActiveSlot; return s != null && s.colorizer != null ? s.colorizer : colorizer; }
+    }
+
     public override void OnNetworkSpawn()
     {
         // Tutti i client reagiscono ai cambi di parametro per aggiornare la UI.
+        _villageIndex.OnValueChanged += OnVillageChanged;
         _year.OnValueChanged += OnAnyParamChanged;
         _dayOfYear.OnValueChanged += OnAnyParamChanged;
         _hoursCsv.OnValueChanged += OnAnyParamChanged;
@@ -120,16 +258,20 @@ public class ThermalSimNetworkController : NetworkBehaviour
         _simGeneration.OnValueChanged += OnSimGenerationChanged;
         _colorGeneration.OnValueChanged += OnColorGenerationChanged;
 
-        // L'owner inizializza i NetworkVariable dai valori in Inspector dell'apiClient,
+        // L'owner inizializza i NetworkVariable dai valori in Inspector dell'apiClient attivo,
         // cosi' il pannello parte allineato alla configurazione del progetto.
-        if (IsOwner && apiClient != null)
+        TemperatureApiClient api = ActiveApi;
+        if (IsOwner && api != null)
         {
-            _year.Value = apiClient.year;
-            _dayOfYear.Value = apiClient.dayOfYear;
-            _hoursCsv.Value = IntArrayToCsv(apiClient.timesOfDay);
-            _timezone.Value = apiClient.timezoneStr ?? "Europe/Rome";
+            _year.Value = api.year;
+            _dayOfYear.Value = api.dayOfYear;
+            _hoursCsv.Value = IntArrayToCsv(api.timesOfDay);
+            _timezone.Value = api.timezoneStr ?? "Europe/Rome";
             _scenarioIndex.Value = Mathf.Clamp(defaultScenarioIndex, 0, 2);
         }
+
+        // Mostra subito il borgo giusto, anche a chi entra a sessione avviata.
+        ApplyVillageSelection(force: true);
 
         // Ogni client (incluso chi entra in ritardo) scarica la geometria una volta
         // e poi esegue la simulazione corrente, per allinearsi ai colori condivisi.
@@ -142,6 +284,7 @@ public class ThermalSimNetworkController : NetworkBehaviour
 
     public override void OnNetworkDespawn()
     {
+        _villageIndex.OnValueChanged -= OnVillageChanged;
         _year.OnValueChanged -= OnAnyParamChanged;
         _dayOfYear.OnValueChanged -= OnAnyParamChanged;
         _hoursCsv.OnValueChanged -= OnAnyParamChanged;
@@ -157,6 +300,15 @@ public class ThermalSimNetworkController : NetworkBehaviour
     // ======================================================================
     //  API pubblica chiamata dalla UI (da QUALSIASI client)
     // ======================================================================
+
+    /// <summary>Selettore borgo: cambia modello per tutti e rilancia con gli stessi parametri.</summary>
+    public void RequestSetVillage(int villageIndex)
+    {
+        if (villages == null || villages.Length == 0) return;
+        int target = Mathf.Clamp(villageIndex, 0, villages.Length - 1);
+        if (target == _villageIndex.Value) return;   // gia' attivo: niente rilancio inutile
+        SetVillageRpc(target);
+    }
 
     /// <summary>Pulsante 1: imposta data/ora e rilancia la simulazione per tutti.</summary>
     public void RequestSetDateTime(int year, int dayOfYear, string hoursCsv)
@@ -179,6 +331,18 @@ public class ThermalSimNetworkController : NetworkBehaviour
     // ======================================================================
     //  RPC: vengono eseguiti dall'owner, che scrive i NetworkVariable
     // ======================================================================
+
+    [Rpc(SendTo.Owner)]
+    private void SetVillageRpc(int villageIndex)
+    {
+        _villageIndex.Value = villageIndex;
+
+        // I marker sono ancorati al frame locale del modello: su un altro borgo
+        // finirebbero su una superficie che nessuno ha misurato. Si azzerano.
+        if (markerNetwork != null) markerNetwork.RequestClearAll();
+
+        _simGeneration.Value++;  // stessa data, stessa ora, stesso scenario: cambia solo il modello
+    }
 
     [Rpc(SendTo.Owner)]
     private void SetDateTimeRpc(int year, int dayOfYear, FixedString128Bytes hoursCsv)
@@ -211,7 +375,14 @@ public class ThermalSimNetworkController : NetworkBehaviour
     }
 
     [Rpc(SendTo.Owner)]
-    private void RelaunchRpc() => _simGeneration.Value++;
+    private void RelaunchRpc()
+    {
+        // "Aggiorna" deve rinterrogare davvero i servizi, altrimenti non servirebbe
+        // a niente: cambiando epoca tutte le firme in cache diventano obsolete su
+        // tutti i client, e la simulazione riparte dalla rete.
+        _cacheEpoch.Value++;
+        _simGeneration.Value++;
+    }
 
     // ======================================================================
     //  Reazioni (su tutti i client)
@@ -219,8 +390,19 @@ public class ThermalSimNetworkController : NetworkBehaviour
 
     private void OnAnyParamChanged<T>(T previous, T current) => OnStateChanged?.Invoke();
 
+    private void OnVillageChanged(int previous, int current)
+    {
+        ApplyVillageSelection();
+        OnStateChanged?.Invoke();
+    }
+
     private void OnSimGenerationChanged(int previous, int current)
     {
+        // L'ordine di arrivo dei NetworkVariable non e' garantito: si riapplica la
+        // selezione prima di simulare, cosi' la simulazione parte sul modello giusto
+        // anche se l'indice del borgo e' arrivato nello stesso frame.
+        ApplyVillageSelection();
+
         if (_runningSim != null) StopCoroutine(_runningSim);
         _runningSim = StartCoroutine(RunSimulationRoutine());
     }
@@ -228,6 +410,42 @@ public class ThermalSimNetworkController : NetworkBehaviour
     private void OnColorGenerationChanged(int previous, int current)
     {
         ApplyColorParamsAndRecolor();
+    }
+
+    /// <summary>
+    /// Accende il modello del borgo attivo, spegne gli altri e allinea il Sole al sito.
+    /// E' un'operazione puramente locale: ogni client la esegue per conto suo a partire
+    /// dall'indice sincronizzato.
+    /// </summary>
+    private void ApplyVillageSelection(bool force = false)
+    {
+        if (villages == null || villages.Length == 0) return;
+
+        int idx = ClampVillage(_villageIndex.Value);
+        if (!force && idx == _appliedVillageIndex) return;
+        _appliedVillageIndex = idx;
+
+        for (int i = 0; i < villages.Length; i++)
+        {
+            VillageSlot s = villages[i];
+            if (s == null || s.root == null) continue;
+            s.root.SetActive(i == idx);
+        }
+
+        VillageSlot active = villages[idx];
+        if (active != null && sun != null)
+        {
+            // Il Sole resta dov'e' nella gerarchia (fratello dei modelli, sotto il
+            // contenitore comune): cambiano solo sito e orientamento del Nord, che
+            // sono proprieta' del borgo e della sua mesh.
+            sun.latitude = active.latitude;
+            sun.longitude = active.longitude;
+            sun.northOffsetDeg = active.northOffsetDeg;
+            sun.UpdateSun();
+        }
+
+        // climateClient legge latitudine e longitudine dal SunPositioner, quindi
+        // interrogando l'API climatica usera' da solo le coordinate del borgo attivo.
     }
 
     // ======================================================================
@@ -245,37 +463,81 @@ public class ThermalSimNetworkController : NetworkBehaviour
             yield return RunSimulationRoutine();
     }
 
-    private IEnumerator EnsureFaceDebug()
+    /// <summary>true se la geometria di questo client e' gia' stata scaricata per quel modello.</summary>
+    private static bool HasFaceDebug(TemperatureApiClient c) =>
+        c != null && c.faceDebugData != null &&
+        c.faceDebugData.face_debug != null && c.faceDebugData.face_debug.Length > 0;
+
+    /// <summary>true se il client ha gia' in pancia un array di temperature valido.</summary>
+    private static bool HasTemperatures(TemperatureApiClient c) =>
+        c != null && c.responseData != null &&
+        c.responseData.face_temperatures != null &&
+        c.responseData.face_temperatures.temperatures != null;
+
+    /// <summary>
+    /// Firma dei parametri che determinano il risultato della simulazione.
+    /// Non comprende i parametri di colore (ri-colorazione locale) ne' il borgo
+    /// (ogni slot ha la propria firma), ma comprende l'epoca della cache, che
+    /// "Aggiorna" incrementa per forzare una rilettura dai servizi.
+    /// </summary>
+    private string BuildSignature()
     {
-        if (_faceDebugReady || apiClient == null) yield break;
+        return string.Concat(
+            _cacheEpoch.Value.ToString(CultureInfo.InvariantCulture), "|",
+            _year.Value.ToString(CultureInfo.InvariantCulture), "|",
+            _dayOfYear.Value.ToString(CultureInfo.InvariantCulture), "|",
+            _hoursCsv.Value.ToString(), "|",
+            _scenarioIndex.Value.ToString(CultureInfo.InvariantCulture));
+    }
 
-        // La geometria (face-debug) non dipende da data/ora: si scarica una volta sola.
-        yield return apiClient.DownloadFaceDebug();
-
-        _faceDebugReady = apiClient.faceDebugData != null
-                          && apiClient.faceDebugData.face_debug != null
-                          && apiClient.faceDebugData.face_debug.Length > 0;
+    private IEnumerator EnsureFaceDebug(TemperatureApiClient api)
+    {
+        // La geometria non dipende da data/ora e viene tenuta nel client del borgo:
+        // si scarica una volta per borgo, non una volta per applicazione. Tornare
+        // indietro non ripassa dalla rete.
+        if (api == null || HasFaceDebug(api)) yield break;
+        yield return api.DownloadFaceDebug();
     }
 
     private IEnumerator RunSimulationRoutine()
     {
-        if (apiClient == null) yield break;
+        TemperatureApiClient api = ActiveApi;
+        if (api == null) yield break;
+
+        VillageSlot slot = ActiveSlot;
+        string signature = BuildSignature();
 
         SetSimBusy(true);   // -> Wait / rosso
         try
         {
-            yield return EnsureFaceDebug();
-            if (!_faceDebugReady) yield break;
+            // --- Cache: questo borgo e' gia' stato calcolato con questi parametri? ---
+            // La firma non comprende i parametri di colore, perche' la ri-colorazione
+            // e' locale e non richiede alcuna chiamata: cambiare palette o range non
+            // deve invalidare nulla.
+            if (slot != null && slot.cachedSignature == signature
+                && HasFaceDebug(api) && HasTemperatures(api))
+            {
+                _lastTminC = slot.cachedTminC;
+                _lastTmaxC = slot.cachedTmaxC;
+                _lastAirTempC = slot.cachedAirC;
+                _hasClimate = true;
+
+                ApplyColorParamsAndRecolor();   // ri-colora e notifica la UI
+                yield break;                    // il finally rimette Ready
+            }
+
+            yield return EnsureFaceDebug(api);
+            if (!HasFaceDebug(api)) yield break;
 
             // Spinge i parametri sincronizzati nell'apiClient prima della chiamata.
-            apiClient.year = _year.Value;
-            apiClient.dayOfYear = _dayOfYear.Value;
-            apiClient.timesOfDay = CsvToIntArray(_hoursCsv.Value.ToString());
+            api.year = _year.Value;
+            api.dayOfYear = _dayOfYear.Value;
+            api.timesOfDay = CsvToIntArray(_hoursCsv.Value.ToString());
             // Rete di sicurezza: se nessuna ora e' selezionata, usa le 14 di default
             // (evita un payload con times_of_day vuoto -> 400 Bad Request dal server).
-            if (apiClient.timesOfDay == null || apiClient.timesOfDay.Length == 0)
-                apiClient.timesOfDay = new int[] { 14 };
-            apiClient.timezoneStr = _timezone.Value.ToString();
+            if (api.timesOfDay == null || api.timesOfDay.Length == 0)
+                api.timesOfDay = new int[] { 14 };
+            api.timezoneStr = _timezone.Value.ToString();
 
             // --- Temperatura dell'aria dall'API climatica (porta 8004) ---
             // Ogni client la ricava da se' con data+scenario+coordinate identici: deterministico,
@@ -306,9 +568,9 @@ public class ThermalSimNetworkController : NetworkBehaviour
             // (meteo_station_temperature_max = massimo giornaliero). Coerentemente, come aria
             // uso il MASSIMO di T(h) tra le ore selezionate (il picco). Fallback: ora 14.
             float airTemp = float.NegativeInfinity;
-            if (apiClient.timesOfDay != null && apiClient.timesOfDay.Length > 0)
+            if (api.timesOfDay != null && api.timesOfDay.Length > 0)
             {
-                foreach (int h in apiClient.timesOfDay)
+                foreach (int h in api.timesOfDay)
                 {
                     float t = FutureClimateClient.HourlyTemperature(climate.tminC, climate.tmaxC, h);
                     if (t > airTemp) airTemp = t;
@@ -323,17 +585,26 @@ public class ThermalSimNetworkController : NetworkBehaviour
             _lastTmaxC = climate.tmaxC;
             _lastAirTempC = airTemp;
             _hasClimate = true;
-            apiClient.meteoStationTemperatureMax = airTemp;
+            api.meteoStationTemperatureMax = airTemp;
             OnStateChanged?.Invoke();   // aggiorna il readout della temperatura nel pannello
 
-            yield return apiClient.RunSimulation();
+            yield return api.RunSimulation();
 
-            if (apiClient.responseData == null
-                || apiClient.responseData.face_temperatures == null
-                || apiClient.responseData.face_temperatures.temperatures == null)
+            if (!HasTemperatures(api))
             {
                 Debug.LogError("ThermalSimNetworkController: simulazione senza dati di temperatura.");
                 yield break;
+            }
+
+            // Si registra la firma solo adesso, a risultato buono in mano: una firma
+            // scritta prima trasformerebbe un errore di rete in un risultato "valido"
+            // che la cache servirebbe per tutto il resto della sessione.
+            if (slot != null)
+            {
+                slot.cachedSignature = signature;
+                slot.cachedTminC = _lastTminC;
+                slot.cachedTmaxC = _lastTmaxC;
+                slot.cachedAirC = _lastAirTempC;
             }
 
             ApplyColorParamsAndRecolor();
@@ -357,29 +628,30 @@ public class ThermalSimNetworkController : NetworkBehaviour
     /// <summary>Applica i parametri di colore correnti e ri-colora la mesh (nessuna API).</summary>
     private void ApplyColorParamsAndRecolor()
     {
-        if (colorizer == null) return;
+        TriangleTemperatureColorizer target = ActiveColorizer;
+        if (target == null) return;
 
         if (_autoRange.Value)
         {
             // Range automatico dai metadati della risposta.
-            colorizer.useDynamicRangeFromResponse = true;
-            colorizer.usePercentileStretch = false;
+            target.useDynamicRangeFromResponse = true;
+            target.usePercentileStretch = false;
         }
         else
         {
             // Range definito dall'utente: disattiva gli override automatici.
-            colorizer.useDynamicRangeFromResponse = false;
-            colorizer.usePercentileStretch = false;
-            colorizer.minTemp = _colorMin.Value;
-            colorizer.maxTemp = _colorMax.Value;
+            target.useDynamicRangeFromResponse = false;
+            target.usePercentileStretch = false;
+            target.minTemp = _colorMin.Value;
+            target.maxTemp = _colorMax.Value;
         }
 
         // Ramp: usa una delle palette preimpostate (no gradient custom).
-        colorizer.useCustomGradient = false;
-        colorizer.palettePreset = (TemperaturePalette)Mathf.Clamp(
+        target.useCustomGradient = false;
+        target.palettePreset = (TemperaturePalette)Mathf.Clamp(
             _rampIndex.Value, 0, Enum.GetValues(typeof(TemperaturePalette)).Length - 1);
 
-        colorizer.ApplyColors();
+        target.ApplyColors();
         OnStateChanged?.Invoke();
     }
 
