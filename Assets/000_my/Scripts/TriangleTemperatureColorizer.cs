@@ -97,6 +97,15 @@ public class TriangleTemperatureColorizer : MonoBehaviour
     }
 
     // Ricolorazione leggera e sincrona: usa la cache degli indici, nessuna API, nessun re-bake.
+    /// <summary>Estremo basso dell'intervallo usato nell'ultima colorazione.</summary>
+    public float AppliedColorMin { get; private set; }
+
+    /// <summary>Estremo alto dell'intervallo usato nell'ultima colorazione.</summary>
+    public float AppliedColorMax { get; private set; }
+
+    /// <summary>true dopo la prima colorazione: prima di allora i due valori sopra non significano nulla.</summary>
+    public bool HasAppliedRange { get; private set; }
+
     private void RecolorNow()
     {
         if (!_meshBuilt || _coloredMesh == null) return;
@@ -129,6 +138,14 @@ public class TriangleTemperatureColorizer : MonoBehaviour
         }
         if (Mathf.Approximately(colorMin, colorMax))
             colorMax = colorMin + 0.0001f;
+
+        // Intervallo EFFETTIVAMENTE usato per colorare, che con lo stiramento ai percentili
+        // e' piu' stretto di minTemp..maxTemp. La legenda deve leggere questo: mostrando gli
+        // estremi del dato accanto a una rampa disegnata su un altro intervallo, farebbe
+        // attribuire ai colori temperature che non hanno.
+        AppliedColorMin = colorMin;
+        AppliedColorMax = colorMax;
+        HasAppliedRange = true;
 
         for (int tri = 0; tri < triangleCount; tri++)
         {
@@ -424,11 +441,8 @@ public class TriangleTemperatureColorizer : MonoBehaviour
     private void BuildColoredMeshStructure(Mesh sourceMesh, int[] sourceTriangles, int triangleCount, MeshFilter mf, MeshCollider mc)
     {
         Vector3[] sourceVertices = sourceMesh.vertices;
-        Vector3[] sourceNormals  = sourceMesh.normals;
-        bool hasNormals = sourceNormals != null && sourceNormals.Length == sourceVertices.Length;
 
         Vector3[] newVertices  = new Vector3[sourceTriangles.Length];
-        Vector3[] newNormals   = new Vector3[sourceTriangles.Length];
         int[]     newTriangles = new int[sourceTriangles.Length];
         _colorBuffer           = new Color[sourceTriangles.Length];
 
@@ -440,7 +454,6 @@ public class TriangleTemperatureColorizer : MonoBehaviour
                 int dstIndex = tri * 3 + k;
 
                 newVertices[dstIndex] = sourceVertices[srcIndex];
-                if (hasNormals) newNormals[dstIndex] = sourceNormals[srcIndex];
                 newTriangles[dstIndex] = dstIndex;
             }
         }
@@ -452,8 +465,22 @@ public class TriangleTemperatureColorizer : MonoBehaviour
 
         _coloredMesh.vertices  = newVertices;
         _coloredMesh.triangles = newTriangles;
-        if (hasNormals) _coloredMesh.normals = newNormals;
-        else _coloredMesh.RecalculateNormals();
+        // Normali piatte, SEMPRE, ignorando quelle del file.
+        //
+        // La mesh qui e' gia' divisa per faccia - ogni triangolo ha tre vertici propri -
+        // quindi RecalculateNormals produce la normale geometrica esatta di ciascuna faccia,
+        // senza alcuna media con le vicine.
+        //
+        // Prima venivano copiate le normali del file sorgente. Su un modello esportato con
+        // ombreggiatura morbida quelle normali sono mediate fra facce adiacenti, e uno
+        // spigolo a 90 gradi appare raccordato: le pareti sembrano stondate. Nessuna
+        // impostazione di importazione poteva rimediare, perche' la mesh mostrata non e'
+        // quella importata ma questa, ricostruita a runtime.
+        //
+        // La faccetta non e' solo una questione di aspetto: ogni faccia porta UN valore di
+        // temperatura, cioe' un dato discreto. Sfumare l'ombreggiatura fra facce vicine
+        // confonde visivamente misure che sono distinte.
+        _coloredMesh.RecalculateNormals();
         _coloredMesh.colors = _colorBuffer;
         _coloredMesh.RecalculateBounds();
 

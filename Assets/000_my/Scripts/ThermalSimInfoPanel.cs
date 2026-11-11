@@ -14,8 +14,26 @@ public class ThermalSimInfoPanel : MonoBehaviour
 {
     [Header("Riferimenti")]
     public ThermalSimNetworkController controller;
+
+    [Tooltip("Usati solo come ripiego quando il controller non ha borghi configurati. " +
+             "Con piu' borghi il pannello segue da se' quello attivo: i campi qui sotto " +
+             "vengono ignorati.")]
     public TemperatureApiClient apiClient;
     public TriangleTemperatureColorizer colorizer;
+
+    // Con piu' borghi sul tavolo i riferimenti fissi mostravano sempre i numeri dello
+    // stesso modello: le statistiche di Caldana restavano a fianco dei colori di Bibbona,
+    // e la legenda riportava un intervallo che non era quello disegnato. Qui si chiede al
+    // controller qual e' il borgo attivo, invece di fidarsi di cio' che c'e' in Inspector.
+    private TemperatureApiClient ActiveApi =>
+        (controller != null && controller.ActiveApiClient != null)
+            ? controller.ActiveApiClient
+            : apiClient;
+
+    private TriangleTemperatureColorizer ActiveColorizer =>
+        (controller != null && controller.ActiveTriangleColorizer != null)
+            ? controller.ActiveTriangleColorizer
+            : colorizer;
 
     [Header("(a) Info simulazione (TMP)")]
     public TMP_Text tMinLabel;
@@ -53,8 +71,9 @@ public class ThermalSimInfoPanel : MonoBehaviour
     // (a) ---------------------------------------------------------------
     private void RefreshInfo()
     {
-        MetadataData m = (apiClient != null && apiClient.responseData != null)
-                       ? apiClient.responseData.metadata : null;
+        TemperatureApiClient api = ActiveApi;
+        MetadataData m = (api != null && api.responseData != null)
+                       ? api.responseData.metadata : null;
 
         if (m == null)
         {
@@ -74,11 +93,15 @@ public class ThermalSimInfoPanel : MonoBehaviour
     // (b) ---------------------------------------------------------------
     private void RefreshRamp()
     {
-        if (colorizer == null) return;
+        TriangleTemperatureColorizer target = ActiveColorizer;
+        if (target == null) return;
 
-        // Estremi della legenda = range effettivo usato dal colorizer.
-        float min = colorizer.minTemp;
-        float max = colorizer.maxTemp;
+        // Estremi della legenda = intervallo EFFETTIVAMENTE applicato ai colori.
+        // Con lo stiramento ai percentili e' piu' stretto degli estremi del dato, che
+        // restano visibili qui sopra come "T min" e "T max": i due numeri non devono
+        // coincidere, e la differenza fra loro e' quanto si e' tagliato alle code.
+        float min = target.HasAppliedRange ? target.AppliedColorMin : target.minTemp;
+        float max = target.HasAppliedRange ? target.AppliedColorMax : target.maxTemp;
         SetText(rampMinLabel, $"{min:0.0} \u00B0C");
         SetText(rampMaxLabel, $"{max:0.0} \u00B0C");
 
@@ -98,7 +121,7 @@ public class ThermalSimInfoPanel : MonoBehaviour
         for (int x = 0; x < w; x++)
         {
             float t01 = (float)x / (w - 1);
-            pixels[x] = colorizer.EvaluateRamp(t01);
+            pixels[x] = target.EvaluateRamp(t01);
         }
         _rampTex.SetPixels(pixels);
         _rampTex.Apply(false);

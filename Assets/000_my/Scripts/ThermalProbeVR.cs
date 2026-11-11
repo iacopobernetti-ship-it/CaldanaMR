@@ -16,6 +16,12 @@ using UnityEngine.InputSystem;
 /// La temperatura e' deterministica (uguale per tutti), quindi la sonda e' LOCALE: ogni utente
 /// puo' interrogare i propri punti senza networking.
 ///
+/// PIU' BORGHI SUL TAVOLO
+/// La sonda non e' legata a un modello preciso: accetta QUALSIASI colorizer colpisca e si
+/// ricorda quale fosse al momento della mira. In precedenza confrontava il colpo con un unico
+/// colorizer assegnato in Inspector, e sul secondo borgo il confronto falliva in silenzio:
+/// niente crocetta, niente marker, nessun messaggio.
+///
 /// NOTA: per ottenere il triangolo colpito il MeshCollider del modello deve essere NON convex
 /// (hit.triangleIndex e' valido solo sui mesh collider non convessi).
 /// </summary>
@@ -24,7 +30,11 @@ public class ThermalProbeVR : MonoBehaviour
     [Header("Riferimenti")]
     [Tooltip("Origine del raggio di mira: la Main Camera (sguardo) o un controller (puntatore).")]
     public Transform aimSource;
+
+    [Tooltip("Colorizer di partenza. Con piu' borghi non e' piu' vincolante: la sonda usa " +
+             "quello che colpisce. Si puo' lasciare assegnato al primo borgo o lasciare vuoto.")]
     public TriangleTemperatureColorizer colorizer;
+
     [Tooltip("Crocetta di mira: spostata sul punto colpito mentre miri.")]
     public Transform reticle;
     [Tooltip("Marcatore opzionale lasciato nell'ultimo punto 'sparato'.")]
@@ -33,6 +43,13 @@ public class ThermalProbeVR : MonoBehaviour
     [Tooltip("Se assegnato, lo sparo crea un marker CONDIVISO (uno per utente, colorato). " +
              "In tal caso il marcatore locale sopra viene ignorato.")]
     public ProbeMarkerNetwork markerNetwork;
+
+    [Tooltip("Trasformazione in cui vengono espressi i marker condivisi. Deve essere LO STESSO " +
+             "oggetto assegnato come 'Model Root' su ProbeMarkerRenderer, altrimenti i marker " +
+             "compaiono spostati: il mittente e il destinatario userebbero due sistemi di " +
+             "riferimento diversi. Con piu' borghi e' il contenitore comune (Villages). " +
+             "Se lasciato vuoto si usa il modello colpito, come nella versione a un borgo solo.")]
+    public Transform markerSpace;
 
     [Header("Output (TMP)")]
     [Tooltip("Temperatura in tempo reale del punto mirato (opzionale).")]
@@ -60,6 +77,11 @@ public class ThermalProbeVR : MonoBehaviour
     private int _aimTriangle = -1;
     private float _aimTemp;
 
+    // Colorizer colpito al momento dell'ultima mira valida. Va ricordato insieme al punto:
+    // sparando con il pulsante UI possono passare dei frame, e nel frattempo lo sguardo
+    // potrebbe essere altrove o il borgo attivo potrebbe essere cambiato.
+    private TriangleTemperatureColorizer _aimColorizer;
+
     private const int IgnoreRaycastLayer = 2;   // layer predefinito di Unity escluso dai raycast
 
     public bool IsActive => _active;
@@ -67,7 +89,7 @@ public class ThermalProbeVR : MonoBehaviour
     private void Awake()
     {
         // Crocetta e marcatore NON devono intercettare il raggio della sonda:
-        // sono figli del modello e, se colpiti, falserebbero mira e posizione.
+        // stanno nello stesso spazio del modello e, se colpiti, falserebbero mira e posizione.
         // Mettendoli su "Ignore Raycast" il Physics.Raycast di default li ignora.
         SetLayerRecursive(reticle, IgnoreRaycastLayer);
         SetLayerRecursive(shotMarker, IgnoreRaycastLayer);
@@ -111,13 +133,16 @@ public class ThermalProbeVR : MonoBehaviour
         {
             _hasAim = false;
             _hasCapturedAim = false;
+            _aimColorizer = null;
             SetText(liveLabel, "");
         }
     }
 
     private void Update()
     {
-        if (!_active || aimSource == null || colorizer == null) return;
+        // Il colorizer non e' piu' un prerequisito: con piu' borghi quello buono e' quello
+        // che si colpisce, e si scopre solo dopo il raycast.
+        if (!_active || aimSource == null) return;
         UpdateAim();
     }
 
@@ -128,9 +153,10 @@ public class ThermalProbeVR : MonoBehaviour
 
         if (Physics.Raycast(ray, out RaycastHit hit, maxDistance))
         {
-            // Accetta solo il collider che porta IL colorizer (non un figlio: GetComponent, non InParent).
+            // Si accetta il collider che porta UN colorizer, qualunque borgo sia
+            // (non un figlio: GetComponent, non GetComponentInParent).
             TriangleTemperatureColorizer c = hit.collider.GetComponent<TriangleTemperatureColorizer>();
-            if (c == colorizer)
+            if (c != null)
             {
                 if (reticle != null)
                 {
@@ -141,16 +167,17 @@ public class ThermalProbeVR : MonoBehaviour
                 }
 
                 if (hit.triangleIndex >= 0 &&
-                    colorizer.TryGetTriangleDebugInfo(hit.triangleIndex, out TriangleDebugInfo info))
+                    c.TryGetTriangleDebugInfo(hit.triangleIndex, out TriangleDebugInfo info))
                 {
                     // Punto valido: aggiorna lo stato corrente E l'ultimo punto catturato.
                     _aimPoint = hit.point;
                     _aimNormal = hit.normal;
                     _aimTriangle = hit.triangleIndex;
                     _aimTemp = info.temperature;
+                    _aimColorizer = c;
                     _hasAim = true;
                     _hasCapturedAim = true;
-                    SetText(liveLabel, $"{_aimTemp:0.0} \u00B0C");
+                    SetText(liveLabel, $"{_aimTemp:0.0} °C");
                 }
             }
         }
@@ -158,7 +185,7 @@ public class ThermalProbeVR : MonoBehaviour
         if (!_hasAim)
         {
             if (reticle != null) reticle.gameObject.SetActive(false);
-            SetText(liveLabel, "\u2014");
+            SetText(liveLabel, "—");
         }
     }
 
@@ -174,24 +201,34 @@ public class ThermalProbeVR : MonoBehaviour
             return;
         }
 
-        SetText(resultLabel, $"{_aimTemp:0.0} \u00B0C");
+        SetText(resultLabel, $"{_aimTemp:0.0} °C");
 
-        // Marker CONDIVISO (uno per utente): invia il punto in coordinate LOCALI del modello,
+        TriangleTemperatureColorizer target = _aimColorizer != null ? _aimColorizer : colorizer;
+
+        // Marker CONDIVISO (uno per utente): si invia il punto in coordinate LOCALI,
         // cosi' resta ancorato correttamente su tutti i client (regge la colocation).
-        if (markerNetwork != null && colorizer != null)
+        if (markerNetwork != null)
         {
-            Vector3 local = colorizer.transform.InverseTransformPoint(_aimPoint);
-            Vector3 localN = colorizer.transform.InverseTransformDirection(_aimNormal).normalized;
-            markerNetwork.RequestPlaceMarker(local, localN, _aimTemp);
-            return;   // il marker (anche il proprio) lo disegna il renderer di rete
+            Transform space = markerSpace != null
+                ? markerSpace
+                : (target != null ? target.transform : null);
+
+            if (space != null)
+            {
+                Vector3 local = space.InverseTransformPoint(_aimPoint);
+                Vector3 localN = space.InverseTransformDirection(_aimNormal).normalized;
+                markerNetwork.RequestPlaceMarker(local, localN, _aimTemp);
+                return;   // il marker (anche il proprio) lo disegna il renderer di rete
+            }
         }
 
         // Fallback single-player: marcatore locale.
         if (shotMarker != null)
         {
             shotMarker.gameObject.SetActive(true);
-            // Aggancia il marcatore al modello cosi' resta sul punto anche se il modello si sposta.
-            if (colorizer != null) shotMarker.SetParent(colorizer.transform, true);
+            // Aggancia il marcatore al modello colpito, cosi' resta sul punto anche se
+            // il modello si sposta - e sparisce insieme a lui quando si cambia borgo.
+            if (target != null) shotMarker.SetParent(target.transform, true);
             shotMarker.position = _aimPoint;
         }
     }

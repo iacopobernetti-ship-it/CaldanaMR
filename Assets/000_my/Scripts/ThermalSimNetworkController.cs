@@ -205,6 +205,17 @@ public class ThermalSimNetworkController : NetworkBehaviour
         }
     }
 
+    /// <summary>
+    /// Client API del borgo attivo. Serve ai pannelli che leggono i metadati della
+    /// risposta (minime, medie, massime, radiazione): senza questo leggerebbero sempre
+    /// il borgo collegato in Inspector, mostrando i numeri di Caldana accanto ai colori
+    /// di Bibbona.
+    /// </summary>
+    public TemperatureApiClient ActiveApiClient => ActiveApi;
+
+    /// <summary>Colorizer del borgo attivo, per la legenda della rampa.</summary>
+    public TriangleTemperatureColorizer ActiveTriangleColorizer => ActiveColorizer;
+
     /// <summary>Nome dell'i-esimo borgo, per etichettare i pulsanti.</summary>
     public string VillageNameAt(int i)
     {
@@ -633,13 +644,24 @@ public class ThermalSimNetworkController : NetworkBehaviour
 
         if (_autoRange.Value)
         {
-            // Range automatico dai metadati della risposta.
+            // Range automatico ricavato dalla risposta DI QUESTO borgo: due modelli
+            // alla stessa data e ora ottengono quindi due scale diverse, ciascuna
+            // centrata sulla propria distribuzione. E' voluto: nel confronto interessa
+            // dove sono le zone calde e fredde dentro ciascun tessuto urbano, non di
+            // quanto un paese sia complessivamente piu' caldo dell'altro - quella
+            // differenza si legge nei valori, non nei colori.
             target.useDynamicRangeFromResponse = true;
-            target.usePercentileStretch = false;
+
+            // Lo stiramento ai percentili NON viene piu' forzato a false: resta quello
+            // configurato sul singolo colorizer (di norma 5-95). Serve proprio qui:
+            // poche facce estreme, una falda quasi parallela ai raggi o uno spigolo
+            // esposto, schiaccerebbero tutto il resto della rampa in una fascia
+            // strettissima, rendendo illeggibile la distribuzione che si vuole leggere.
         }
         else
         {
-            // Range definito dall'utente: disattiva gli override automatici.
+            // Range definito dall'utente: qui invece lo stiramento va spento, altrimenti
+            // i valori min/max scelti a mano verrebbero ignorati.
             target.useDynamicRangeFromResponse = false;
             target.usePercentileStretch = false;
             target.minTemp = _colorMin.Value;
