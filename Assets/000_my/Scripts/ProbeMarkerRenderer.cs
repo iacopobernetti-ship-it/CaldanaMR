@@ -36,12 +36,36 @@ public class ProbeMarkerRenderer : MonoBehaviour
     [Header("Orientamento")]
     [Tooltip("Allinea il marker alla normale della superficie (come il reticle), parallelo alla mesh.")]
     public bool alignToSurface = true;
-    [Tooltip("Stacco del marker dalla superficie lungo la normale (unita' locali del modello).")]
+    [Tooltip("Stacco del marker dalla superficie lungo la normale, in METRI di mondo. " +
+             "Viene convertito nello spazio di modelRoot, quindi non cambia se cambi " +
+             "il contenitore di riferimento.")]
     public float surfaceOffset = 0.05f;
     [Tooltip("Se alignToSurface e' OFF, la label fa billboard verso questa camera (vuoto = Camera.main).")]
     public Camera billboardCamera;
 
     private readonly List<GameObject> _pool = new();
+
+    /// <summary>
+    /// Fattore che riporta i marker alla dimensione progettata nel prefab, qualunque sia
+    /// la scala di modelRoot.
+    ///
+    /// I marker nascono figli di modelRoot e ne ereditano la scala. Finche' modelRoot era
+    /// il modello del borgo (scala ~0.0035) il prefab andava disegnato circa trecento volte
+    /// piu' grande del vero; spostando modelRoot sul contenitore comune, che ha scala 1,
+    /// gli stessi marker diventavano trecento volte troppo grandi - una sfera cosi' grande
+    /// da contenere la camera, quindi invisibile, che sembra un marker non istanziato.
+    /// Compensando qui, la dimensione del prefab e' sempre quella che si vede, e cambiare
+    /// il riferimento non obbliga piu' a ritarare nulla.
+    /// </summary>
+    private float RootScaleCompensation
+    {
+        get
+        {
+            if (modelRoot == null) return 1f;
+            float s = modelRoot.lossyScale.x;   // si assume scala uniforme, come in scena
+            return Mathf.Approximately(s, 0f) ? 1f : 1f / s;
+        }
+    }
 
     private void OnEnable()
     {
@@ -62,6 +86,8 @@ public class ProbeMarkerRenderer : MonoBehaviour
         if (markerNetwork == null || markerPrefab == null || modelRoot == null) return;
 
         int n = markerNetwork.Count;
+        float comp = RootScaleCompensation;
+        Vector3 prefabScale = markerPrefab.transform.localScale;
 
         // Espandi il pool se servono piu' marker.
         while (_pool.Count < n)
@@ -79,13 +105,18 @@ public class ProbeMarkerRenderer : MonoBehaviour
             Vector3 nrm = new Vector3(m.nx, m.ny, m.nz);
 
             Transform tr = _pool[i].transform;
+            tr.localScale = prefabScale * comp;
+
             if (alignToSurface && nrm.sqrMagnitude > 1e-6f)
             {
                 nrm.Normalize();
                 // Stacca dalla superficie lungo la normale. Orienta il marker in modo che il
                 // testo (fronte TMP = +Z) sia leggibile guardando da FUORI: +Z verso l'interno
                 // (-normale), cosi' non appare specchiato.
-                tr.localPosition = pos + nrm * surfaceOffset;
+                // Lo stacco e' espresso in metri di mondo e convertito qui nello spazio
+                // di modelRoot, cosi' resta lo stesso distacco visibile su entrambi i
+                // borghi, che hanno scale diverse.
+                tr.localPosition = pos + nrm * (surfaceOffset * comp);
                 tr.localRotation = Quaternion.LookRotation(-nrm);
             }
             else

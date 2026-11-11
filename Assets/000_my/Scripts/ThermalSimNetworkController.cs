@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Unity.Collections;
@@ -164,6 +165,21 @@ public class ThermalSimNetworkController : NetworkBehaviour
     /// <summary>Errore dall'API climatica (messaggio in inglese) -> mostrato nel pannello.</summary>
     public event Action<string> OnClimateError;
 
+    // Preferenza di stiramento ai percentili come configurata in Inspector su ciascun
+    // colorizer.
+    //
+    // Va ricordata qui perche' la modalita' a range manuale deve spegnere lo stiramento,
+    // e spegnerlo significa SCRIVERE false nel componente: da quel momento il valore che
+    // avevi scelto in Inspector e' perduto, e tornando in Auto lo stiramento non riparte
+    // piu' su quel borgo. E' il motivo per cui funzionava su un modello e non sull'altro.
+    private readonly Dictionary<TriangleTemperatureColorizer, bool> _stretchPreference =
+        new Dictionary<TriangleTemperatureColorizer, bool>();
+
+    // Stesso discorso per il gradiente personalizzato: il controller lo forzava a false
+    // per imporre una palette preimpostata, cancellando il gradiente disegnato a mano.
+    private readonly Dictionary<TriangleTemperatureColorizer, bool> _customGradientPreference =
+        new Dictionary<TriangleTemperatureColorizer, bool>();
+
     private Coroutine _runningSim;
     private bool _simBusy;
     private int _appliedVillageIndex = -1;   // -1 = selezione non ancora applicata in scena
@@ -279,6 +295,20 @@ public class ThermalSimNetworkController : NetworkBehaviour
             _hoursCsv.Value = IntArrayToCsv(api.timesOfDay);
             _timezone.Value = api.timezoneStr ?? "Europe/Rome";
             _scenarioIndex.Value = Mathf.Clamp(defaultScenarioIndex, 0, 2);
+        }
+
+        // La palette iniziale la decide l'Inspector del colorizer, non il valore di
+        // partenza del NetworkVariable.
+        //
+        // _rampIndex nasce a 0, e ApplyColorParamsAndRecolor scrive quell'indice dentro
+        // palettePreset a ogni colorazione: senza questa riga la scelta fatta in scena
+        // veniva sostituita dalla prima voce dell'enum e non si vedeva mai, su nessuno
+        // dei due borghi.
+        if (IsOwner)
+        {
+            TriangleTemperatureColorizer refColorizer = ActiveColorizer;
+            if (refColorizer != null)
+                _rampIndex.Value = Mathf.Clamp((int)refColorizer.palettePreset, 0, PaletteCount - 1);
         }
 
         // Mostra subito il borgo giusto, anche a chi entra a sessione avviata.
@@ -642,6 +672,13 @@ public class ThermalSimNetworkController : NetworkBehaviour
         TriangleTemperatureColorizer target = ActiveColorizer;
         if (target == null) return;
 
+        // Si fotografa la preferenza la prima volta che si incontra questo colorizer,
+        // cioe' prima di averla potuta sovrascrivere.
+        if (!_stretchPreference.ContainsKey(target))
+            _stretchPreference[target] = target.usePercentileStretch;
+        if (!_customGradientPreference.ContainsKey(target))
+            _customGradientPreference[target] = target.useCustomGradient;
+
         if (_autoRange.Value)
         {
             // Range automatico ricavato dalla risposta DI QUESTO borgo: due modelli
@@ -652,11 +689,15 @@ public class ThermalSimNetworkController : NetworkBehaviour
             // differenza si legge nei valori, non nei colori.
             target.useDynamicRangeFromResponse = true;
 
-            // Lo stiramento ai percentili NON viene piu' forzato a false: resta quello
-            // configurato sul singolo colorizer (di norma 5-95). Serve proprio qui:
-            // poche facce estreme, una falda quasi parallela ai raggi o uno spigolo
-            // esposto, schiaccerebbero tutto il resto della rampa in una fascia
-            // strettissima, rendendo illeggibile la distribuzione che si vuole leggere.
+            // Si RIPRISTINA la preferenza di Inspector, invece di limitarsi a non
+            // toccarla: se una sessione precedente e' passata dal range manuale, il
+            // campo e' gia' stato azzerato e lasciarlo com'e' non basterebbe.
+            //
+            // Lo stiramento serve proprio qui: poche facce estreme, una falda quasi
+            // parallela ai raggi o uno spigolo molto esposto, schiacciano tutto il resto
+            // della rampa in una fascia strettissima e rendono illeggibile la
+            // distribuzione che si vuole leggere.
+            target.usePercentileStretch = _stretchPreference[target];
         }
         else
         {
@@ -668,10 +709,16 @@ public class ThermalSimNetworkController : NetworkBehaviour
             target.maxTemp = _colorMax.Value;
         }
 
-        // Ramp: usa una delle palette preimpostate (no gradient custom).
-        target.useCustomGradient = false;
-        target.palettePreset = (TemperaturePalette)Mathf.Clamp(
-            _rampIndex.Value, 0, Enum.GetValues(typeof(TemperaturePalette)).Length - 1);
+        // Rampa. Se il colorizer era configurato con un gradiente personalizzato, quello
+        // comanda e la palette preimpostata non viene toccata: imporla significherebbe
+        // buttare via un gradiente disegnato a mano, che e' una scelta di interpretazione
+        // del dato, non un valore di comodo.
+        target.useCustomGradient = _customGradientPreference[target];
+        if (!target.useCustomGradient)
+        {
+            target.palettePreset = (TemperaturePalette)Mathf.Clamp(
+                _rampIndex.Value, 0, Enum.GetValues(typeof(TemperaturePalette)).Length - 1);
+        }
 
         target.ApplyColors();
         OnStateChanged?.Invoke();

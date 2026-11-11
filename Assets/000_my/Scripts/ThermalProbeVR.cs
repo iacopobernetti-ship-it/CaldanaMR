@@ -95,6 +95,45 @@ public class ThermalProbeVR : MonoBehaviour
         SetLayerRecursive(shotMarker, IgnoreRaycastLayer);
     }
 
+    private void Start()
+    {
+        ResolveMarkerSpace();
+    }
+
+    /// <summary>
+    /// Allinea il sistema di riferimento dei marker a quello che usa davvero il renderer.
+    ///
+    /// Mittente e destinatario devono misurare nello stesso spazio: la sonda invia
+    /// coordinate locali, il renderer le interpreta rispetto al proprio 'Model Root'.
+    /// Lasciare che li si imposti a mano in due punti diversi dell'Inspector significa
+    /// che prima o poi divergono - ed e' esattamente cio' che accade quando il marker
+    /// non compare su un borgo e compare sull'altro: le coordinate di un modello in scala
+    /// 0.003 lette come se fossero del contenitore finiscono sepolte vicino all'origine.
+    /// Qui il valore si prende dalla fonte, cosi' non possono piu' disaccordarsi.
+    /// </summary>
+    private void ResolveMarkerSpace()
+    {
+        ProbeMarkerRenderer rendererComponent =
+            FindFirstObjectByType<ProbeMarkerRenderer>(FindObjectsInactive.Include);
+
+        if (rendererComponent == null || rendererComponent.modelRoot == null) return;
+
+        if (markerSpace == null)
+        {
+            markerSpace = rendererComponent.modelRoot;
+            return;
+        }
+
+        if (markerSpace != rendererComponent.modelRoot)
+        {
+            Debug.LogWarning(
+                $"ThermalProbeVR: 'Marker Space' ({markerSpace.name}) e il 'Model Root' del " +
+                $"ProbeMarkerRenderer ({rendererComponent.modelRoot.name}) sono oggetti diversi. " +
+                "I marker comparirebbero spostati: uso il Model Root del renderer.");
+            markerSpace = rendererComponent.modelRoot;
+        }
+    }
+
     private static void SetLayerRecursive(Transform t, int layer)
     {
         if (t == null) return;
